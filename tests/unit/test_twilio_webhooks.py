@@ -14,7 +14,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vozbot.storage.db.models import Language
 from vozbot.telephony.webhooks.twilio_webhooks import (
+    ENGLISH_SPEECH_PATTERNS,
+    MAX_LANGUAGE_ATTEMPTS,
+    SPANISH_SPEECH_PATTERNS,
+    detect_language_from_input,
     get_request_validator,
     get_twilio_adapter,
     router,
@@ -184,7 +189,7 @@ class TestLanguageSelectWebhook:
     ) -> None:
         """Test language selection with English (digit 1)."""
         response = client.post(
-            "/webhooks/twilio/language-select",
+            "/webhooks/twilio/language-select?attempt=1",
             data={
                 "CallSid": "CA123456",
                 "Digits": "1",
@@ -197,14 +202,14 @@ class TestLanguageSelectWebhook:
 
         # Should respond in English
         assert 'language="en-US"' in content
-        assert "Thank you" in content
+        assert "You have selected English" in content
 
     def test_language_select_spanish(
         self, client: TestClient, mock_env_dev
     ) -> None:
         """Test language selection with Spanish (digit 2)."""
         response = client.post(
-            "/webhooks/twilio/language-select",
+            "/webhooks/twilio/language-select?attempt=1",
             data={
                 "CallSid": "CA123456",
                 "Digits": "2",
@@ -217,14 +222,14 @@ class TestLanguageSelectWebhook:
 
         # Should respond in Spanish
         assert 'language="es-MX"' in content
-        assert "Gracias" in content
+        assert "Ha seleccionado español" in content
 
     def test_language_select_default_to_english(
         self, client: TestClient, mock_env_dev
     ) -> None:
-        """Test language selection defaults to English with no input."""
+        """Test language selection defaults to English after max attempts with no input."""
         response = client.post(
-            "/webhooks/twilio/language-select",
+            "/webhooks/twilio/language-select?attempt=3&timeout=true",
             data={
                 "CallSid": "CA123456",
             },
@@ -233,15 +238,15 @@ class TestLanguageSelectWebhook:
         assert response.status_code == 200
         content = response.text
 
-        # Should default to English
-        assert "Thank you" in content
+        # Should default to English after max attempts
+        assert "Defaulting to English" in content
 
     def test_language_select_hangup(
         self, client: TestClient, mock_env_dev
     ) -> None:
         """Test language selection ends with hangup (Phase 0)."""
         response = client.post(
-            "/webhooks/twilio/language-select",
+            "/webhooks/twilio/language-select?attempt=1",
             data={
                 "CallSid": "CA123456",
                 "Digits": "1",
@@ -508,7 +513,6 @@ class TestSignatureValidationFunction:
     @pytest.mark.asyncio
     async def test_validation_passes_with_valid_signature(self) -> None:
         """Test signature validation with valid signature."""
-        import asyncio
         from unittest.mock import AsyncMock
 
         from fastapi import Request
@@ -621,7 +625,7 @@ class TestWebhookTwiMLOutput:
                 "To": "+15559876543",
                 "CallStatus": "ringing",
             }),
-            ("/webhooks/twilio/language-select", {
+            ("/webhooks/twilio/language-select?attempt=1", {
                 "CallSid": "CA123",
                 "Digits": "1",
             }),
@@ -648,3 +652,417 @@ class TestWebhookTwiMLOutput:
             # Check for Response element (may be <Response> or <Response />)
             assert "<Response" in content
             assert ("Response>" in content or "Response />" in content)
+
+
+class TestLanguageDetectionFunction:
+    """Tests for the detect_language_from_input function."""
+
+    # DTMF Tests
+    def test_detect_english_from_digit_1(self) -> None:
+        """Test that pressing 1 selects English."""
+        result = detect_language_from_input(digits="1")
+        assert result == Language.EN
+
+    def test_detect_spanish_from_digit_2(self) -> None:
+        """Test that pressing 2 selects Spanish."""
+        result = detect_language_from_input(digits="2")
+        assert result == Language.ES
+
+    def test_invalid_digit_returns_none(self) -> None:
+        """Test that invalid digits return None."""
+        for digit in ["0", "3", "4", "5", "6", "7", "8", "9", "*", "#"]:
+            result = detect_language_from_input(digits=digit)
+            assert result is None, f"Digit {digit} should return None"
+
+    def test_empty_digit_returns_none(self) -> None:
+        """Test that empty digit returns None."""
+        result = detect_language_from_input(digits="")
+        assert result is None
+
+    # Speech Tests - English patterns
+    def test_detect_english_from_speech_english(self) -> None:
+        """Test that saying 'English' selects English."""
+        result = detect_language_from_input(speech_result="English")
+        assert result == Language.EN
+
+    def test_detect_english_from_speech_ingles(self) -> None:
+        """Test that saying 'inglés' selects English."""
+        result = detect_language_from_input(speech_result="inglés")
+        assert result == Language.EN
+
+    def test_detect_english_from_speech_one(self) -> None:
+        """Test that saying 'one' selects English."""
+        result = detect_language_from_input(speech_result="one")
+        assert result == Language.EN
+
+    def test_detect_english_from_speech_uno(self) -> None:
+        """Test that saying 'uno' selects English."""
+        result = detect_language_from_input(speech_result="uno")
+        assert result == Language.EN
+
+    # Speech Tests - Spanish patterns
+    def test_detect_spanish_from_speech_spanish(self) -> None:
+        """Test that saying 'Spanish' selects Spanish."""
+        result = detect_language_from_input(speech_result="Spanish")
+        assert result == Language.ES
+
+    def test_detect_spanish_from_speech_espanol(self) -> None:
+        """Test that saying 'español' selects Spanish."""
+        result = detect_language_from_input(speech_result="español")
+        assert result == Language.ES
+
+    def test_detect_spanish_from_speech_two(self) -> None:
+        """Test that saying 'two' selects Spanish."""
+        result = detect_language_from_input(speech_result="two")
+        assert result == Language.ES
+
+    def test_detect_spanish_from_speech_dos(self) -> None:
+        """Test that saying 'dos' selects Spanish."""
+        result = detect_language_from_input(speech_result="dos")
+        assert result == Language.ES
+
+    # Case insensitivity tests
+    def test_speech_detection_case_insensitive(self) -> None:
+        """Test that speech detection is case insensitive."""
+        assert detect_language_from_input(speech_result="ENGLISH") == Language.EN
+        assert detect_language_from_input(speech_result="SPANISH") == Language.ES
+        assert detect_language_from_input(speech_result="english") == Language.EN
+        assert detect_language_from_input(speech_result="spanish") == Language.ES
+        assert detect_language_from_input(speech_result="EnGlIsH") == Language.EN
+
+    def test_speech_with_surrounding_text(self) -> None:
+        """Test that speech detection works with surrounding text."""
+        assert detect_language_from_input(speech_result="I want English please") == Language.EN
+        assert detect_language_from_input(speech_result="press one") == Language.EN
+        assert detect_language_from_input(speech_result="número dos") == Language.ES
+
+    # Edge cases
+    def test_no_input_returns_none(self) -> None:
+        """Test that no input returns None."""
+        result = detect_language_from_input()
+        assert result is None
+
+    def test_dtmf_takes_precedence_over_speech(self) -> None:
+        """Test that DTMF input takes precedence over speech."""
+        # If both are provided, DTMF should win
+        result = detect_language_from_input(digits="1", speech_result="Spanish")
+        assert result == Language.EN
+
+        result = detect_language_from_input(digits="2", speech_result="English")
+        assert result == Language.ES
+
+    def test_unrecognized_speech_returns_none(self) -> None:
+        """Test that unrecognized speech returns None."""
+        result = detect_language_from_input(speech_result="hello world")
+        assert result is None
+
+        result = detect_language_from_input(speech_result="I need help")
+        assert result is None
+
+    def test_speech_with_whitespace(self) -> None:
+        """Test that speech detection handles whitespace."""
+        assert detect_language_from_input(speech_result="  English  ") == Language.EN
+        assert detect_language_from_input(speech_result="\tSpanish\n") == Language.ES
+
+
+class TestLanguageDetectionConstants:
+    """Tests for language detection constants."""
+
+    def test_max_attempts_is_three(self) -> None:
+        """Test that max attempts is set to 3."""
+        assert MAX_LANGUAGE_ATTEMPTS == 3
+
+    def test_english_patterns_contain_expected_values(self) -> None:
+        """Test that English patterns contain expected values."""
+        expected = {"english", "inglés", "ingles", "one", "uno", "1"}
+        assert expected == ENGLISH_SPEECH_PATTERNS
+
+    def test_spanish_patterns_contain_expected_values(self) -> None:
+        """Test that Spanish patterns contain expected values."""
+        expected = {"spanish", "español", "espanol", "two", "dos", "2"}
+        assert expected == SPANISH_SPEECH_PATTERNS
+
+
+class TestLanguageSelectWebhookEnhanced:
+    """Enhanced tests for the language selection webhook."""
+
+    def test_language_select_with_speech_english(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test language selection with speech input for English."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=1",
+            data={
+                "CallSid": "CA123456",
+                "SpeechResult": "English",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should respond in English
+        assert 'language="en-US"' in content
+        assert "You have selected English" in content
+
+    def test_language_select_with_speech_spanish(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test language selection with speech input for Spanish."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=1",
+            data={
+                "CallSid": "CA123456",
+                "SpeechResult": "español",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should respond in Spanish
+        assert 'language="es-MX"' in content
+        assert "Ha seleccionado español" in content
+
+    def test_language_select_retry_on_invalid_input(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that invalid input triggers a retry."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=1",
+            data={
+                "CallSid": "CA123456",
+                "Digits": "5",  # Invalid digit
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should have error message and Gather for retry
+        assert "did not understand" in content
+        assert "<Gather" in content
+        assert "attempt=2" in content
+
+    def test_language_select_retry_on_timeout(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that timeout triggers a retry."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=1&timeout=true",
+            data={
+                "CallSid": "CA123456",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should have timeout message and Gather for retry
+        assert "did not receive" in content
+        assert "<Gather" in content
+        assert "attempt=2" in content
+
+    def test_language_select_defaults_to_english_after_max_attempts(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that 3 failed attempts default to English."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=3",
+            data={
+                "CallSid": "CA123456",
+                "Digits": "9",  # Invalid digit on 3rd attempt
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should default to English with message
+        assert "Defaulting to English" in content
+        assert 'language="en-US"' in content
+        # Should NOT have another Gather
+        assert "<Gather" not in content
+
+    def test_language_select_timeout_defaults_to_english_on_attempt_3(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that timeout on attempt 3 defaults to English."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=3&timeout=true",
+            data={
+                "CallSid": "CA123456",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should default to English
+        assert "Defaulting to English" in content
+        assert 'language="en-US"' in content
+
+    def test_language_select_confirmation_message_english(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test confirmation message for English selection."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=1",
+            data={
+                "CallSid": "CA123456",
+                "Digits": "1",
+            },
+        )
+
+        content = response.json()
+
+        assert "You have selected English" in content
+
+    def test_language_select_confirmation_message_spanish(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test confirmation message for Spanish selection."""
+        response = client.post(
+            "/webhooks/twilio/language-select?attempt=1",
+            data={
+                "CallSid": "CA123456",
+                "Digits": "2",
+            },
+        )
+
+        content = response.json()
+
+        assert "Ha seleccionado español" in content
+
+    def test_language_select_stores_language_in_db(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that language selection stores language in database."""
+        with patch(
+            "vozbot.telephony.webhooks.twilio_webhooks._store_language_selection"
+        ) as mock_store:
+            response = client.post(
+                "/webhooks/twilio/language-select?attempt=1",
+                data={
+                    "CallSid": "CA123456",
+                    "Digits": "2",
+                },
+            )
+
+            assert response.status_code == 200
+            # Verify store function was called with correct args
+            mock_store.assert_called_once()
+            call_args = mock_store.call_args
+            assert call_args[0][0] == "CA123456"
+            assert call_args[0][1] == Language.ES
+
+    def test_language_select_db_failure_does_not_crash(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that DB failure during language storage doesn't crash."""
+        # Mock the DB session at its source module - it's imported inside
+        # the _store_language_selection function
+        with patch(
+            "vozbot.storage.db.session.get_db_session"
+        ) as mock_session:
+            # Make DB session raise an exception
+            mock_session.side_effect = Exception("Database connection failed")
+
+            response = client.post(
+                "/webhooks/twilio/language-select?attempt=1",
+                data={
+                    "CallSid": "CA123456",
+                    "Digits": "1",
+                },
+            )
+
+            # Should still return 200 with confirmation
+            # (DB failure is caught and logged, call continues)
+            assert response.status_code == 200
+            content = response.json()
+            assert "You have selected English" in content
+
+
+class TestBilingualGreetingTwiML:
+    """Tests for the bilingual greeting TwiML generation."""
+
+    def test_voice_webhook_has_speech_input(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that voice webhook TwiML includes speech input."""
+        response = client.post(
+            "/webhooks/twilio/voice",
+            data={
+                "CallSid": "CA123456",
+                "From": "+15551234567",
+                "To": "+15559876543",
+                "CallStatus": "ringing",
+            },
+        )
+
+        # Parse JSON-encoded string to get actual XML
+        content = response.json()
+
+        # Should have speech input type
+        assert 'input="dtmf speech"' in content
+
+    def test_voice_webhook_has_speech_hints(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that voice webhook TwiML includes speech hints."""
+        response = client.post(
+            "/webhooks/twilio/voice",
+            data={
+                "CallSid": "CA123456",
+                "From": "+15551234567",
+                "To": "+15559876543",
+                "CallStatus": "ringing",
+            },
+        )
+
+        # Parse JSON-encoded string to get actual XML
+        content = response.json()
+
+        # Should have hints for speech recognition
+        assert "hints=" in content
+        assert "English" in content or "english" in content.lower()
+
+    def test_voice_webhook_has_timeout(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that voice webhook TwiML has proper timeout."""
+        response = client.post(
+            "/webhooks/twilio/voice",
+            data={
+                "CallSid": "CA123456",
+                "From": "+15551234567",
+                "To": "+15559876543",
+                "CallStatus": "ringing",
+            },
+        )
+
+        # Parse JSON-encoded string to get actual XML
+        content = response.json()
+
+        # Should have timeout setting
+        assert 'timeout="10"' in content
+
+    def test_voice_webhook_action_url_includes_attempt(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that voice webhook action URL includes attempt parameter."""
+        response = client.post(
+            "/webhooks/twilio/voice",
+            data={
+                "CallSid": "CA123456",
+                "From": "+15551234567",
+                "To": "+15559876543",
+                "CallStatus": "ringing",
+            },
+        )
+
+        # Parse JSON-encoded string to get actual XML
+        content = response.json()
+
+        # Should have attempt=1 in action URL
+        assert "attempt=1" in content

@@ -538,8 +538,12 @@ class TestTwiMLGenerationBilingualGreeting:
         assert 'language="en-US"' in twiml
         assert 'language="es-MX"' in twiml
 
+        # Should have speech input
+        assert 'input="dtmf speech"' in twiml
+        assert "hints=" in twiml
+
     def test_generate_bilingual_greeting_has_redirect_fallback(self) -> None:
-        """Test bilingual greeting includes redirect for no input."""
+        """Test bilingual greeting includes redirect for timeout."""
         response = TwilioAdapter.generate_bilingual_greeting_twiml(
             english_text="Press 1",
             spanish_text="Presione 2",
@@ -547,6 +551,18 @@ class TestTwiMLGenerationBilingualGreeting:
         )
         twiml = str(response)
 
-        # Should have Redirect for default action
+        # Should have Redirect for timeout handling
         assert "<Redirect>" in twiml
-        assert "Digits=1" in twiml  # Default to English
+        assert "timeout=true" in twiml
+
+    def test_generate_bilingual_greeting_custom_timeout(self) -> None:
+        """Test bilingual greeting with custom timeout."""
+        response = TwilioAdapter.generate_bilingual_greeting_twiml(
+            english_text="Press 1",
+            spanish_text="Presione 2",
+            gather_action_url="https://example.com/select",
+            timeout=15,
+        )
+        twiml = str(response)
+
+        assert 'timeout="15"' in twiml

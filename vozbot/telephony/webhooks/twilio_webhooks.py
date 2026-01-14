@@ -10,16 +10,59 @@ import logging
 import os
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request, status
 from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse
 
 from vozbot.storage.db.models import CallStatus as DBCallStatus
+from vozbot.storage.db.models import Language
 from vozbot.telephony.adapters.twilio_adapter import TwilioAdapter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks/twilio", tags=["twilio"])
+
+# Language detection constants
+MAX_LANGUAGE_ATTEMPTS = 3
+ENGLISH_SPEECH_PATTERNS = {"english", "inglés", "ingles", "one", "uno", "1"}
+SPANISH_SPEECH_PATTERNS = {"spanish", "español", "espanol", "two", "dos", "2"}
+
+
+def detect_language_from_input(
+    digits: str | None = None,
+    speech_result: str | None = None,
+) -> Language | None:
+    """Detect language selection from DTMF digits or speech input.
+
+    Args:
+        digits: DTMF digit pressed (1 for English, 2 for Spanish).
+        speech_result: Speech recognition result.
+
+    Returns:
+        Language enum (EN or ES) if detected, None otherwise.
+    """
+    # Check DTMF input first
+    if digits:
+        if digits == "1":
+            return Language.EN
+        elif digits == "2":
+            return Language.ES
+        # Any other digit is invalid
+        return None
+
+    # Check speech input
+    if speech_result:
+        speech_lower = speech_result.lower().strip()
+        # Check for English patterns
+        for pattern in ENGLISH_SPEECH_PATTERNS:
+            if pattern in speech_lower:
+                return Language.EN
+        # Check for Spanish patterns
+        for pattern in SPANISH_SPEECH_PATTERNS:
+            if pattern in speech_lower:
+                return Language.ES
+
+    return None
 
 
 def get_twilio_adapter() -> TwilioAdapter:
@@ -142,17 +185,18 @@ async def handle_incoming_call(
             extra={"call_sid": CallSid, "error": str(e)},
         )
 
-    # Generate bilingual greeting
+    # Generate bilingual greeting with language selection menu
     response = TwilioAdapter.generate_bilingual_greeting_twiml(
         english_text=(
             "Hello, this is VozBot, the automated assistant for the insurance office. "
-            "For English, press 1 or stay on the line. "
+            "Press 1 for English. "
         ),
         spanish_text=(
             "Hola, soy VozBot, el asistente automatico de la oficina de seguros. "
-            "Para espanol, presione 2. "
+            "Presione 2 para español. "
         ),
-        gather_action_url=f"{request.base_url}webhooks/twilio/language-select",
+        gather_action_url=f"{request.base_url}webhooks/twilio/language-select?attempt=1",
+        timeout=10,
     )
 
     logger.info("Call answered with bilingual greeting", extra={"call_sid": CallSid})
@@ -165,44 +209,183 @@ async def handle_language_selection(
     request: Request,
     CallSid: Annotated[str, Form()],
     Digits: Annotated[str | None, Form()] = None,
+    SpeechResult: Annotated[str | None, Form()] = None,
+    attempt: int = Query(default=1),
+    timeout: bool = Query(default=False),
     _validated: bool = Depends(validate_twilio_signature),
 ) -> str:
-    """Handle language selection DTMF input.
+    """Handle language selection DTMF or speech input.
+
+    Implements retry logic for failed attempts and timeout handling.
 
     Args:
         request: FastAPI request object.
         CallSid: Unique identifier for the call.
         Digits: DTMF digits entered by caller.
+        SpeechResult: Speech recognition result.
+        attempt: Current attempt number (1-3).
+        timeout: Whether this is a timeout redirect.
 
     Returns:
         TwiML response as XML string.
     """
+    logger.info(
+        "Language selection input received",
+        extra={
+            "call_sid": CallSid,
+            "digits": Digits,
+            "speech_result": SpeechResult,
+            "attempt": attempt,
+            "timeout": timeout,
+        },
+    )
+
     response = VoiceResponse()
 
-    # Determine language from input
-    if Digits == "2":
-        # Spanish selected
+    # Detect language from input
+    detected_language = detect_language_from_input(
+        digits=Digits,
+        speech_result=SpeechResult,
+    )
+
+    # Handle timeout or failed detection
+    if detected_language is None:
+        # Check if we've exceeded max attempts
+        if attempt >= MAX_LANGUAGE_ATTEMPTS:
+            # Default to English after 3 failed attempts
+            logger.info(
+                "Max language selection attempts reached, defaulting to English",
+                extra={"call_sid": CallSid, "attempts": attempt},
+            )
+            detected_language = Language.EN
+            # Inform caller we're defaulting to English
+            response.say(
+                "We did not receive a valid selection. Defaulting to English.",
+                language="en-US",
+            )
+        else:
+            # Retry - play prompt again
+            next_attempt = attempt + 1
+            logger.info(
+                "Language selection failed, retrying",
+                extra={"call_sid": CallSid, "next_attempt": next_attempt},
+            )
+
+            # Play retry message based on what happened
+            if timeout:
+                # Timeout message
+                response.say(
+                    "We did not receive your selection.",
+                    language="en-US",
+                )
+                response.say(
+                    "No recibimos su selección.",
+                    language="es-MX",
+                )
+            else:
+                # Invalid input message
+                response.say(
+                    "Sorry, we did not understand your selection.",
+                    language="en-US",
+                )
+                response.say(
+                    "Lo siento, no entendimos su selección.",
+                    language="es-MX",
+                )
+
+            # Gather again with incremented attempt
+            gather = response.gather(
+                num_digits=1,
+                action=f"{request.base_url}webhooks/twilio/language-select?attempt={next_attempt}",
+                method="POST",
+                timeout=10,
+                input="dtmf speech",
+                hints="English, inglés, Spanish, español, one, two, uno, dos",
+                speech_timeout="auto",
+                language="en-US",
+            )
+
+            gather.say(
+                "Press 1 for English.",
+                language="en-US",
+            )
+            gather.say(
+                "Presione 2 para español.",
+                language="es-MX",
+            )
+
+            # Redirect on timeout
+            response.redirect(
+                f"{request.base_url}webhooks/twilio/language-select?attempt={next_attempt}&timeout=true"
+            )
+
+            return str(response)
+
+    # Language was detected successfully - store in database
+    await _store_language_selection(CallSid, detected_language)
+
+    # Play confirmation message in selected language
+    if detected_language == Language.ES:
         response.say(
-            "Gracias. Un momento, por favor, mientras procesamos su llamada.",
+            "Gracias. Ha seleccionado español.",
             language="es-MX",
         )
-        # TODO: Continue to Spanish call flow
-    else:
-        # Default to English (1 or no input)
+        # For now, acknowledge and end call (Phase 0)
         response.say(
-            "Thank you. Please hold while we process your call.",
+            "Su llamada ha sido recibida. Un representante le devolverá la llamada pronto. Adiós.",
+            language="es-MX",
+        )
+    else:
+        response.say(
+            "Thank you. You have selected English.",
             language="en-US",
         )
-        # TODO: Continue to English call flow
+        # For now, acknowledge and end call (Phase 0)
+        response.say(
+            "Your call has been received. A representative will call you back shortly. Goodbye.",
+            language="en-US",
+        )
 
-    # For now, just acknowledge and hang up (Phase 0)
-    response.say(
-        "Your call has been received. A representative will call you back shortly. Goodbye.",
-        language="en-US" if Digits != "2" else "es-MX",
-    )
     response.hangup()
 
+    logger.info(
+        "Language selection completed",
+        extra={
+            "call_sid": CallSid,
+            "language": detected_language.value,
+        },
+    )
+
     return str(response)
+
+
+async def _store_language_selection(call_sid: str, language: Language) -> None:
+    """Store the selected language in the call record.
+
+    Args:
+        call_sid: Call SID to update.
+        language: Selected language.
+    """
+    try:
+        from vozbot.storage.db.session import get_db_session
+        from vozbot.storage.services.call_service import CallService
+
+        async with get_db_session() as session:
+            service = CallService(session)
+            await service.update_call_language(call_sid, language)
+            # Also update status to LANGUAGE_SELECT to indicate we're past that stage
+            await service.update_call_status(call_sid, DBCallStatus.LANGUAGE_SELECT)
+            await session.commit()
+            logger.info(
+                "Language stored in database",
+                extra={"call_sid": call_sid, "language": language.value},
+            )
+    except Exception as e:
+        # Log but don't fail the call
+        logger.error(
+            "Failed to store language selection (continuing call)",
+            extra={"call_sid": call_sid, "language": language.value, "error": str(e)},
+        )
 
 
 @router.post("/status")

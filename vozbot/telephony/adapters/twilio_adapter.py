@@ -309,15 +309,19 @@ class TwilioAdapter(TelephonyAdapter):
         english_text: str,
         spanish_text: str,
         gather_action_url: str,
+        timeout: int = 10,
+        speech_timeout: str = "auto",
     ) -> VoiceResponse:
         """Generate TwiML for bilingual greeting with language selection.
 
-        Plays greeting in both languages and gathers DTMF input for selection.
+        Plays greeting in both languages and gathers DTMF or speech input.
 
         Args:
             english_text: Greeting text in English.
             spanish_text: Greeting text in Spanish.
-            gather_action_url: URL to receive DTMF input.
+            gather_action_url: URL to receive DTMF or speech input.
+            timeout: Seconds to wait for input (default: 10).
+            speech_timeout: Speech timeout setting (default: "auto").
 
         Returns:
             VoiceResponse with bilingual greeting and Gather TwiML.
@@ -328,7 +332,11 @@ class TwilioAdapter(TelephonyAdapter):
             num_digits=1,
             action=gather_action_url,
             method="POST",
-            timeout=5,
+            timeout=timeout,
+            input="dtmf speech",
+            hints="English, inglés, Spanish, español, one, two, uno, dos",
+            speech_timeout=speech_timeout,
+            language="en-US",
         )
 
         # English greeting first
@@ -337,7 +345,7 @@ class TwilioAdapter(TelephonyAdapter):
         # Then Spanish
         gather.say(spanish_text, language="es-MX")
 
-        # Default to English if no input
-        response.redirect(f"{gather_action_url}?Digits=1")
+        # Default to English if no input (redirect triggers timeout handling)
+        response.redirect(f"{gather_action_url}?timeout=true")
 
         return response
