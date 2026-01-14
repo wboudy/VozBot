@@ -34,6 +34,7 @@ dependencies = [
     "httpx>=0.26.0",
     "python-dotenv>=1.0.0",
     "structlog>=24.1.0",
+    "deepgram-sdk>=3.0.0",
 ]
 
 [project.optional-dependencies]

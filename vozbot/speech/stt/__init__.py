@@ -9,9 +9,21 @@ from vozbot.speech.stt.base import (
     TranscriptChunk,
     TranscriptResult,
 )
+from vozbot.speech.stt.deepgram_adapter import (
+    DeepgramSTT,
+    STTError,
+    STTInvalidAudioError,
+    STTRateLimitError,
+    STTTimeoutError,
+)
 
 __all__ = [
+    "DeepgramSTT",
+    "STTError",
+    "STTInvalidAudioError",
     "STTProvider",
+    "STTRateLimitError",
+    "STTTimeoutError",
     "SupportedLanguage",
     "TranscriptChunk",
     "TranscriptResult",
