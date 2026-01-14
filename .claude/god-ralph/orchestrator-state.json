@@ -1,0 +1,9 @@
+{
+  "status": "running",
+  "started_at": "2026-01-14T16:50:00-05:00",
+  "active_ralphs": ["VozBot-psv.1", "VozBot-psv.2", "VozBot-psv.4"],
+  "completed_beads": [],
+  "failed_beads": [],
+  "total_iterations": 0,
+  "note": "psv.1 handled by other orchestrator, this handles psv.2+"
+}

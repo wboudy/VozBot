@@ -73,10 +73,14 @@ bd sync               # Commit and push changes
 git status              # Check what changed
 git add <files>         # Stage code changes
 bd sync                 # Commit beads changes
-git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
-git push                # Push to remote
+# Code commits and pushes happen at the END of an epic, not per bead.
 ```
+
+### Commit/Push Policy (Override)
+
+- Commit and push **only after an epic is complete**, not after each sub-bead.
+- It is OK to close individual beads without committing code until the epic ends.
+- Use `bd sync` for beads as needed, but defer `git commit` and `git push` for code until epic completion.
 
 ### Best Practices
 
