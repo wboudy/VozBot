@@ -49,3 +49,4 @@ htmlcov/
 
 # Local environment
 .env.local
+vozbot.db
