@@ -1,12 +1,30 @@
 {
-  "status": "completed",
-  "started_at": "2026-01-14T22:00:00-05:00",
-  "completed_at": "2026-01-14T22:30:00-05:00",
+  "status": "running",
+  "started_at": "2026-01-14T22:35:00-05:00",
   "max_iterations_per_bead": 10,
-  "current_bead": null,
-  "active_ralphs": [],
-  "completed_beads": ["VozBot-cpb.6", "VozBot-cpb"],
+  "max_parallel": 3,
+  "active_ralphs": [
+    {
+      "bead_id": "VozBot-2qi.1",
+      "title": "Define LLMProvider interface",
+      "target_file": "vozbot/agent/orchestrator/llm_base.py",
+      "status": "running"
+    },
+    {
+      "bead_id": "VozBot-2qi.3",
+      "title": "Implement call state machine",
+      "target_file": "vozbot/agent/state_machine/states.py",
+      "status": "running"
+    },
+    {
+      "bead_id": "VozBot-2qi.4",
+      "title": "Define tool schemas (Pydantic)",
+      "target_file": "vozbot/agent/tools/schemas.py",
+      "status": "running"
+    }
+  ],
+  "completed_beads": [],
   "failed_beads": [],
-  "total_iterations": 8,
-  "queued_beads": []
+  "total_iterations": 0,
+  "queued_beads": ["VozBot-2qi"]
 }
