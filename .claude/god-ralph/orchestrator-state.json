@@ -1,9 +1,8 @@
 {
-  "status": "completed",
-  "started_at": "2026-01-14T17:50:00-05:00",
-  "completed_at": "2026-01-14T17:55:00-05:00",
-  "active_ralphs": [],
+  "status": "running",
+  "started_at": "2026-01-14T18:00:00-05:00",
+  "active_ralphs": ["VozBot-cpb.3", "VozBot-cpb.4"],
   "completed_beads": ["VozBot-psv.6", "VozBot-psv", "VozBot-cpb.1", "VozBot-cpb.2"],
   "failed_beads": [],
-  "total_iterations": 24
+  "total_iterations": 0
 }
