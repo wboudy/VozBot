@@ -1,9 +1,12 @@
 {
   "status": "completed",
-  "started_at": "2026-01-14T18:15:00-05:00",
-  "completed_at": "2026-01-14T18:20:00-05:00",
+  "started_at": "2026-01-14T22:00:00-05:00",
+  "completed_at": "2026-01-14T22:30:00-05:00",
+  "max_iterations_per_bead": 10,
+  "current_bead": null,
   "active_ralphs": [],
-  "completed_beads": ["VozBot-psv.6", "VozBot-psv", "VozBot-cpb.1", "VozBot-cpb.2", "VozBot-cpb.3", "VozBot-cpb.4", "VozBot-cpb.5"],
+  "completed_beads": ["VozBot-cpb.6", "VozBot-cpb"],
   "failed_beads": [],
-  "total_iterations": 60
+  "total_iterations": 8,
+  "queued_beads": []
 }
