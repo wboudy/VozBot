@@ -50,6 +50,7 @@ class CallStatus(str, Enum):
 class TaskPriority(str, Enum):
     """Priority levels for callback tasks."""
 
+    CRITICAL = "critical"  # Highest priority - transfer failures
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"

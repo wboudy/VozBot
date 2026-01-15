@@ -503,6 +503,16 @@ async def handle_recording_callback(
     return str(response)
 
 
+# Transfer failure fallback messages
+TRANSFER_FALLBACK_MESSAGE_EN = (
+    "I'm sorry, no one is available. We will call you back within 1 hour."
+)
+TRANSFER_FALLBACK_MESSAGE_ES = (
+    "Lo siento, no hay nadie disponible. Le devolveremos la llamada dentro de 1 hora."
+)
+TRANSFER_FAILED_NOTES = "Transfer failed - urgent callback"
+
+
 @router.post("/transfer-status")
 async def handle_transfer_status(
     request: Request,
@@ -519,6 +529,11 @@ async def handle_transfer_status(
     Twilio sends these to report the status of a transfer/dial operation.
     Status events include: initiated, ringing, answered, completed.
 
+    On transfer failure (busy, no-answer, failed, canceled):
+    - Creates a critical priority callback task
+    - Plays fallback message in English and Spanish
+    - Task notes include "Transfer failed - urgent callback"
+
     Args:
         request: FastAPI request object.
         CallSid: Original call SID (the call being transferred).
@@ -529,7 +544,7 @@ async def handle_transfer_status(
         CallStatus: Status of the callback event.
 
     Returns:
-        TwiML response. If transfer failed, can return fallback TwiML.
+        TwiML response. If transfer failed, returns fallback TwiML with callback promise.
     """
     logger.info(
         "Transfer status callback received",
@@ -572,31 +587,110 @@ async def handle_transfer_status(
             await _update_transfer_status(CallSid, "connected", None)
 
         elif DialCallStatus in ("busy", "no-answer", "failed", "canceled"):
-            # Transfer failed - provide fallback
+            # Transfer failed - create callback task and provide fallback
             logger.warning(
-                "Transfer failed",
+                "Transfer failed - triggering fallback to callback",
                 extra={
                     "call_sid": CallSid,
                     "dial_call_status": DialCallStatus,
                     "target": Called,
                 },
             )
-            await _update_transfer_status(CallSid, "failed", None)
 
-            # Provide fallback message to caller
+            # Update call status and create critical callback task
+            # This is wrapped in try/except so caller still gets fallback message
+            try:
+                await _handle_transfer_failure(CallSid, DialCallStatus, Called)
+            except Exception as e:
+                logger.error(
+                    "Error in transfer failure handler (continuing with fallback message)",
+                    extra={"call_sid": CallSid, "error": str(e)},
+                )
+
+            # Provide fallback message to caller (bilingual)
             response.say(
-                "We're sorry, but we were unable to connect you at this time. "
-                "Please try again later or leave a message.",
+                TRANSFER_FALLBACK_MESSAGE_EN,
                 language="en-US",
             )
             response.say(
-                "Lo sentimos, no pudimos conectarle en este momento. "
-                "Por favor intente mas tarde o deje un mensaje.",
+                TRANSFER_FALLBACK_MESSAGE_ES,
                 language="es-MX",
             )
             response.hangup()
 
     return str(response)
+
+
+async def _handle_transfer_failure(
+    call_sid: str,
+    dial_status: str,
+    target_number: str | None,
+) -> None:
+    """Handle transfer failure by updating status and creating callback task.
+
+    Creates a critical priority callback task when transfer fails.
+    The callback task has notes indicating "Transfer failed - urgent callback".
+
+    Args:
+        call_sid: The call SID that failed to transfer.
+        dial_status: The dial status (busy, no-answer, failed, canceled).
+        target_number: The target number that was being dialed.
+    """
+    try:
+        from uuid import uuid4
+
+        from vozbot.storage.db.models import CallbackTask, TaskPriority, TaskStatus
+        from vozbot.storage.db.session import get_db_session
+        from vozbot.storage.services.call_service import CallService
+
+        async with get_db_session() as session:
+            service = CallService(session)
+
+            # Get the call to extract caller info for callback task
+            call = await service.get_call(call_sid)
+            if call is None:
+                logger.warning(
+                    "Call not found for transfer failure callback task",
+                    extra={"call_sid": call_sid},
+                )
+                return
+
+            # Update call status to FAILED
+            await service.update_call_status(call_sid, DBCallStatus.FAILED)
+
+            # Create critical priority callback task
+            callback_task = CallbackTask(
+                id=str(uuid4()),
+                call_id=call_sid,
+                priority=TaskPriority.CRITICAL,  # priority=0 (critical)
+                callback_number=call.from_number,
+                notes=TRANSFER_FAILED_NOTES,  # "Transfer failed - urgent callback"
+                status=TaskStatus.PENDING,
+            )
+
+            session.add(callback_task)
+            await session.commit()
+
+            logger.info(
+                "Created critical callback task for failed transfer",
+                extra={
+                    "call_sid": call_sid,
+                    "task_id": callback_task.id,
+                    "priority": TaskPriority.CRITICAL.value,
+                    "dial_status": dial_status,
+                    "target_number": target_number,
+                },
+            )
+    except Exception as e:
+        # Log but don't fail the callback - caller still gets fallback message
+        logger.error(
+            "Failed to create callback task for transfer failure",
+            extra={
+                "call_sid": call_sid,
+                "dial_status": dial_status,
+                "error": str(e),
+            },
+        )
 
 
 async def _update_transfer_status(

@@ -353,3 +353,7 @@ class TestTwilioTransferIntegration:
         xml_es = str(twiml_es)
         assert "Por favor espere" in xml_es
         assert 'language="es-MX"' in xml_es
+
+
+# Transfer fallback callback integration tests have been moved to
+# test_transfer_fallback.py since they don't require Twilio credentials

@@ -1182,8 +1182,8 @@ class TestTransferStatusWebhook:
         content = response.json()
 
         # Should have fallback message in both languages
-        assert "sorry" in content.lower() or "unable" in content.lower()
-        assert "sentimos" in content.lower() or "pudimos" in content.lower()
+        assert "sorry" in content.lower()
+        assert "siento" in content.lower() or "disponible" in content.lower()
 
     def test_transfer_status_canceled(
         self, client: TestClient, mock_env_dev
@@ -1260,3 +1260,308 @@ class TestTransferStatusWebhook:
         # Should have both English and Spanish messages
         assert 'language="en-US"' in content
         assert 'language="es-MX"' in content
+
+
+class TestTransferFallbackToCallback:
+    """Tests for transfer fallback to callback task functionality.
+
+    When a transfer fails, the system should:
+    1. Create a callback task with priority=0 (critical)
+    2. Include notes: "Transfer failed - urgent callback"
+    3. Play bilingual fallback messages to the caller
+    """
+
+    def test_transfer_failure_message_english(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that transfer failure plays English fallback message."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallStatus": "no-answer",
+                "Called": "+15559999999",
+            },
+        )
+
+        content = response.json()
+
+        # Should have the specific English fallback message
+        assert "no one is available" in content
+        assert "call you back within 1 hour" in content
+
+    def test_transfer_failure_message_spanish(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that transfer failure plays Spanish fallback message."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallStatus": "busy",
+                "Called": "+15559999999",
+            },
+        )
+
+        content = response.json()
+
+        # Should have the specific Spanish fallback message
+        assert "no hay nadie disponible" in content
+        assert "dentro de 1 hora" in content
+
+    def test_transfer_failure_creates_callback_task(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that transfer failure triggers callback task creation."""
+        with patch(
+            "vozbot.telephony.webhooks.twilio_webhooks._handle_transfer_failure"
+        ) as mock_handler:
+            response = client.post(
+                "/webhooks/twilio/transfer-status",
+                data={
+                    "CallSid": "CA_TEST_FAILURE",
+                    "DialCallStatus": "no-answer",
+                    "Called": "+15559999999",
+                },
+            )
+
+            assert response.status_code == 200
+            # Verify the handler was called
+            mock_handler.assert_called_once()
+            call_args = mock_handler.call_args
+            assert call_args[0][0] == "CA_TEST_FAILURE"  # call_sid
+            assert call_args[0][1] == "no-answer"  # dial_status
+            assert call_args[0][2] == "+15559999999"  # target_number
+
+    def test_transfer_failure_all_failure_statuses_trigger_callback(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that all failure statuses trigger callback task creation."""
+        failure_statuses = ["busy", "no-answer", "failed", "canceled"]
+
+        for status in failure_statuses:
+            with patch(
+                "vozbot.telephony.webhooks.twilio_webhooks._handle_transfer_failure"
+            ) as mock_handler:
+                response = client.post(
+                    "/webhooks/twilio/transfer-status",
+                    data={
+                        "CallSid": f"CA_{status}_test",
+                        "DialCallStatus": status,
+                        "Called": "+15559999999",
+                    },
+                )
+
+                assert response.status_code == 200, f"Failed for status: {status}"
+                mock_handler.assert_called_once()
+                assert mock_handler.call_args[0][1] == status
+
+    def test_transfer_success_does_not_create_callback_task(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that successful transfer does NOT create callback task."""
+        with patch(
+            "vozbot.telephony.webhooks.twilio_webhooks._handle_transfer_failure"
+        ) as mock_handler:
+            response = client.post(
+                "/webhooks/twilio/transfer-status",
+                data={
+                    "CallSid": "CA123456",
+                    "DialCallStatus": "completed",
+                    "DialCallDuration": "120",
+                },
+            )
+
+            assert response.status_code == 200
+            # Should NOT call the failure handler
+            mock_handler.assert_not_called()
+
+    def test_transfer_answered_does_not_create_callback_task(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that answered transfer does NOT create callback task."""
+        with patch(
+            "vozbot.telephony.webhooks.twilio_webhooks._handle_transfer_failure"
+        ) as mock_handler:
+            response = client.post(
+                "/webhooks/twilio/transfer-status",
+                data={
+                    "CallSid": "CA123456",
+                    "DialCallStatus": "answered",
+                },
+            )
+
+            assert response.status_code == 200
+            mock_handler.assert_not_called()
+
+    def test_transfer_failure_handler_graceful_on_error(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that failure handler error doesn't crash webhook."""
+        with patch(
+            "vozbot.telephony.webhooks.twilio_webhooks._handle_transfer_failure"
+        ) as mock_handler:
+            mock_handler.side_effect = Exception("Database exploded")
+
+            response = client.post(
+                "/webhooks/twilio/transfer-status",
+                data={
+                    "CallSid": "CA123456",
+                    "DialCallStatus": "no-answer",
+                },
+            )
+
+            # Should still return 200 with fallback message
+            assert response.status_code == 200
+            content = response.json()
+            # Fallback message should still be present
+            assert "no one is available" in content
+
+    def test_transfer_failure_hangup_after_message(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that hangup occurs after fallback message."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallStatus": "failed",
+            },
+        )
+
+        content = response.json()
+
+        # Should end with hangup
+        assert "<Hangup" in content
+
+
+class TestHandleTransferFailureFunction:
+    """Unit tests for the _handle_transfer_failure function."""
+
+    @pytest.mark.asyncio
+    async def test_handle_transfer_failure_creates_critical_task(self) -> None:
+        """Test that _handle_transfer_failure creates a critical priority task."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from vozbot.storage.db.models import Call, TaskPriority
+        from vozbot.telephony.webhooks.twilio_webhooks import (
+            TRANSFER_FAILED_NOTES,
+            _handle_transfer_failure,
+        )
+
+        # Create mock call
+        mock_call = MagicMock(spec=Call)
+        mock_call.from_number = "+15551234567"
+        mock_call.id = "CA_TEST_123"
+
+        # Create mock session
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+        mock_session.commit = AsyncMock()
+
+        # Create mock service
+        mock_service = MagicMock()
+        mock_service.get_call = AsyncMock(return_value=mock_call)
+        mock_service.update_call_status = AsyncMock()
+
+        # Patch at the source module where it's imported from
+        with patch("vozbot.storage.db.session.get_db_session") as mock_get_session:
+            # Make get_db_session return an async context manager
+            mock_context = AsyncMock()
+            mock_context.__aenter__.return_value = mock_session
+            mock_context.__aexit__.return_value = None
+            mock_get_session.return_value = mock_context
+
+            with patch("vozbot.storage.services.call_service.CallService") as mock_service_class:
+                mock_service_class.return_value = mock_service
+
+                await _handle_transfer_failure(
+                    call_sid="CA_TEST_123",
+                    dial_status="no-answer",
+                    target_number="+15559999999",
+                )
+
+                # Verify task was added
+                mock_session.add.assert_called_once()
+                added_task = mock_session.add.call_args[0][0]
+
+                # Verify task properties
+                assert added_task.priority == TaskPriority.CRITICAL
+                assert added_task.callback_number == "+15551234567"
+                assert added_task.notes == TRANSFER_FAILED_NOTES
+                assert added_task.call_id == "CA_TEST_123"
+
+    @pytest.mark.asyncio
+    async def test_handle_transfer_failure_call_not_found(self) -> None:
+        """Test that _handle_transfer_failure handles missing call gracefully."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from vozbot.telephony.webhooks.twilio_webhooks import _handle_transfer_failure
+
+        # Create mock service that returns None for get_call
+        mock_service = MagicMock()
+        mock_service.get_call = AsyncMock(return_value=None)
+
+        mock_session = AsyncMock()
+
+        with patch("vozbot.storage.db.session.get_db_session") as mock_get_session:
+            mock_context = AsyncMock()
+            mock_context.__aenter__.return_value = mock_session
+            mock_context.__aexit__.return_value = None
+            mock_get_session.return_value = mock_context
+
+            with patch("vozbot.storage.services.call_service.CallService") as mock_service_class:
+                mock_service_class.return_value = mock_service
+
+                # Should not raise - handles gracefully
+                await _handle_transfer_failure(
+                    call_sid="CA_NONEXISTENT",
+                    dial_status="no-answer",
+                    target_number="+15559999999",
+                )
+
+                # Should not add any task
+                mock_session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_transfer_failure_db_error_graceful(self) -> None:
+        """Test that _handle_transfer_failure handles DB errors gracefully."""
+        from vozbot.telephony.webhooks.twilio_webhooks import _handle_transfer_failure
+
+        with patch("vozbot.storage.db.session.get_db_session") as mock_get_session:
+            mock_get_session.side_effect = Exception("Database connection failed")
+
+            # Should not raise - logs error and returns
+            await _handle_transfer_failure(
+                call_sid="CA_TEST",
+                dial_status="failed",
+                target_number="+15559999999",
+            )
+
+
+class TestTransferFallbackConstants:
+    """Tests for transfer fallback message constants."""
+
+    def test_english_fallback_message_content(self) -> None:
+        """Test English fallback message contains required elements."""
+        from vozbot.telephony.webhooks.twilio_webhooks import TRANSFER_FALLBACK_MESSAGE_EN
+
+        assert "sorry" in TRANSFER_FALLBACK_MESSAGE_EN.lower()
+        assert "no one is available" in TRANSFER_FALLBACK_MESSAGE_EN.lower()
+        assert "call you back" in TRANSFER_FALLBACK_MESSAGE_EN.lower()
+        assert "1 hour" in TRANSFER_FALLBACK_MESSAGE_EN
+
+    def test_spanish_fallback_message_content(self) -> None:
+        """Test Spanish fallback message contains required elements."""
+        from vozbot.telephony.webhooks.twilio_webhooks import TRANSFER_FALLBACK_MESSAGE_ES
+
+        assert "siento" in TRANSFER_FALLBACK_MESSAGE_ES.lower()
+        assert "disponible" in TRANSFER_FALLBACK_MESSAGE_ES.lower()
+        assert "llamada" in TRANSFER_FALLBACK_MESSAGE_ES.lower()
+        assert "1 hora" in TRANSFER_FALLBACK_MESSAGE_ES
+
+    def test_transfer_failed_notes(self) -> None:
+        """Test transfer failed notes constant."""
+        from vozbot.telephony.webhooks.twilio_webhooks import TRANSFER_FAILED_NOTES
+
+        assert TRANSFER_FAILED_NOTES == "Transfer failed - urgent callback"

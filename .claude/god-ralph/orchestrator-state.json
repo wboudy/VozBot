@@ -1,31 +1,11 @@
 {
   "status": "running",
-  "started_at": "2026-01-14T10:00:00Z",
-  "round": 2,
-  "active_ralphs": [
-    {
-      "bead_id": "VozBot-2qi.2",
-      "description": "Implement OpenAI adapter",
-      "iteration": 0,
-      "max_iterations": 10,
-      "status": "running"
-    },
-    {
-      "bead_id": "VozBot-2qi.5",
-      "description": "Implement tool handlers",
-      "iteration": 0,
-      "max_iterations": 10,
-      "status": "running"
-    },
-    {
-      "bead_id": "VozBot-2qi.6",
-      "description": "Create bilingual prompt templates",
-      "iteration": 0,
-      "max_iterations": 10,
-      "status": "running"
-    }
-  ],
-  "completed_beads": ["VozBot-2qi.1", "VozBot-2qi.3", "VozBot-2qi.4"],
+  "started_at": "2026-01-15T00:20:00-05:00",
+  "max_iterations_per_bead": 10,
+  "max_parallel": 4,
+  "active_ralphs": ["VozBot-jv4.1", "VozBot-jv4.2", "VozBot-1up.1", "VozBot-1up.2"],
+  "completed_beads": [],
   "failed_beads": [],
-  "total_iterations": 0
+  "total_iterations": 0,
+  "queued_beads": ["VozBot-jv4", "VozBot-1up"]
 }

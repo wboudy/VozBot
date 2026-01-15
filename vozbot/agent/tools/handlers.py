@@ -285,6 +285,7 @@ class ToolHandler:
 
             # Map priority
             priority_map = {
+                "critical": TaskPriority.CRITICAL,
                 "low": TaskPriority.LOW,
                 "normal": TaskPriority.NORMAL,
                 "high": TaskPriority.HIGH,

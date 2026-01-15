@@ -71,6 +71,7 @@ class TaskStatus(str, enum.Enum):
 class TaskPriority(int, enum.Enum):
     """Priority levels for callback tasks."""
 
+    CRITICAL = 0  # Highest priority - transfer failures requiring immediate callback
     LOW = 1
     NORMAL = 2
     HIGH = 3
