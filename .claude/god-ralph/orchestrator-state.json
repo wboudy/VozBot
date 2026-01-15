@@ -1,28 +1,31 @@
 {
   "status": "running",
-  "started_at": "2026-01-14T22:35:00-05:00",
-  "max_iterations_per_bead": 10,
-  "max_parallel": 3,
-  "active_ralphs": [],
-  "completed_beads": [
+  "started_at": "2026-01-14T10:00:00Z",
+  "round": 2,
+  "active_ralphs": [
     {
-      "bead_id": "VozBot-2qi.1",
-      "title": "Define LLMProvider interface",
-      "completed_at": "2026-01-14T22:45:00-05:00"
+      "bead_id": "VozBot-2qi.2",
+      "description": "Implement OpenAI adapter",
+      "iteration": 0,
+      "max_iterations": 10,
+      "status": "running"
     },
     {
-      "bead_id": "VozBot-2qi.3",
-      "title": "Implement call state machine",
-      "completed_at": "2026-01-14T22:45:00-05:00"
+      "bead_id": "VozBot-2qi.5",
+      "description": "Implement tool handlers",
+      "iteration": 0,
+      "max_iterations": 10,
+      "status": "running"
     },
     {
-      "bead_id": "VozBot-2qi.4",
-      "title": "Define tool schemas (Pydantic)",
-      "completed_at": "2026-01-14T22:45:00-05:00"
+      "bead_id": "VozBot-2qi.6",
+      "description": "Create bilingual prompt templates",
+      "iteration": 0,
+      "max_iterations": 10,
+      "status": "running"
     }
   ],
+  "completed_beads": ["VozBot-2qi.1", "VozBot-2qi.3", "VozBot-2qi.4"],
   "failed_beads": [],
-  "total_iterations": 3,
-  "next_round": ["VozBot-2qi.2", "VozBot-2qi.5", "VozBot-2qi.6"],
-  "queued_beads": ["VozBot-2qi"]
+  "total_iterations": 0
 }
