@@ -501,3 +501,144 @@ async def handle_recording_callback(
 
     response = VoiceResponse()
     return str(response)
+
+
+@router.post("/transfer-status")
+async def handle_transfer_status(
+    request: Request,
+    CallSid: Annotated[str, Form()],
+    DialCallSid: Annotated[str | None, Form()] = None,
+    DialCallStatus: Annotated[str | None, Form()] = None,
+    DialCallDuration: Annotated[str | None, Form()] = None,
+    Called: Annotated[str | None, Form()] = None,
+    CallStatus: Annotated[str | None, Form()] = None,
+    _validated: bool = Depends(validate_twilio_signature),
+) -> str:
+    """Handle call transfer status callbacks.
+
+    Twilio sends these to report the status of a transfer/dial operation.
+    Status events include: initiated, ringing, answered, completed.
+
+    Args:
+        request: FastAPI request object.
+        CallSid: Original call SID (the call being transferred).
+        DialCallSid: SID of the outbound call leg to the transfer target.
+        DialCallStatus: Status of the dial attempt (e.g., 'answered', 'busy', 'no-answer').
+        DialCallDuration: Duration of the connected call in seconds.
+        Called: The number that was dialed (transfer target).
+        CallStatus: Status of the callback event.
+
+    Returns:
+        TwiML response. If transfer failed, can return fallback TwiML.
+    """
+    logger.info(
+        "Transfer status callback received",
+        extra={
+            "call_sid": CallSid,
+            "dial_call_sid": DialCallSid,
+            "dial_call_status": DialCallStatus,
+            "dial_call_duration": DialCallDuration,
+            "called": Called,
+            "call_status": CallStatus,
+        },
+    )
+
+    response = VoiceResponse()
+
+    # Handle different dial outcomes
+    if DialCallStatus:
+        if DialCallStatus == "completed":
+            # Transfer completed successfully
+            logger.info(
+                "Transfer completed successfully",
+                extra={
+                    "call_sid": CallSid,
+                    "dial_call_sid": DialCallSid,
+                    "duration": DialCallDuration,
+                },
+            )
+            # Update call record if needed
+            await _update_transfer_status(CallSid, "completed", DialCallDuration)
+
+        elif DialCallStatus == "answered":
+            # Transfer target answered - call is connected
+            logger.info(
+                "Transfer connected",
+                extra={
+                    "call_sid": CallSid,
+                    "dial_call_sid": DialCallSid,
+                },
+            )
+            await _update_transfer_status(CallSid, "connected", None)
+
+        elif DialCallStatus in ("busy", "no-answer", "failed", "canceled"):
+            # Transfer failed - provide fallback
+            logger.warning(
+                "Transfer failed",
+                extra={
+                    "call_sid": CallSid,
+                    "dial_call_status": DialCallStatus,
+                    "target": Called,
+                },
+            )
+            await _update_transfer_status(CallSid, "failed", None)
+
+            # Provide fallback message to caller
+            response.say(
+                "We're sorry, but we were unable to connect you at this time. "
+                "Please try again later or leave a message.",
+                language="en-US",
+            )
+            response.say(
+                "Lo sentimos, no pudimos conectarle en este momento. "
+                "Por favor intente mas tarde o deje un mensaje.",
+                language="es-MX",
+            )
+            response.hangup()
+
+    return str(response)
+
+
+async def _update_transfer_status(
+    call_sid: str,
+    status: str,
+    duration: str | None,
+) -> None:
+    """Update call record with transfer status.
+
+    Args:
+        call_sid: The call SID to update.
+        status: Transfer status (connected, completed, failed).
+        duration: Duration of the transfer in seconds.
+    """
+    try:
+        from vozbot.storage.db.session import get_db_session
+        from vozbot.storage.services.call_service import CallService
+
+        async with get_db_session() as session:
+            service = CallService(session)
+
+            if status == "completed" and duration:
+                # Mark call as completed with duration
+                await service.complete_call(
+                    call_id=call_sid,
+                    duration_sec=int(duration),
+                )
+            elif status == "connected":
+                # Update status to show transfer is active
+                await service.update_call_status(call_sid, DBCallStatus.IN_PROGRESS)
+            elif status == "failed":
+                # Mark transfer as failed
+                await service.update_call_status(call_sid, DBCallStatus.FAILED)
+
+            await session.commit()
+            logger.info(
+                "Transfer status updated in database",
+                extra={"call_sid": call_sid, "status": status},
+            )
+    except Exception as e:
+        # Log but don't fail the callback
+        logger.error(
+            "Failed to update transfer status in database",
+            extra={"call_sid": call_sid, "status": status, "error": str(e)},
+        )

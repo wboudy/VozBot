@@ -5,6 +5,7 @@ Provides call control operations through the Twilio API and TwiML generation.
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -17,6 +18,11 @@ from vozbot.telephony.adapters.base import CallInfo, CallStatus, TelephonyAdapte
 if TYPE_CHECKING:
     from twilio.rest.api.v2010.account.call import CallInstance
 
+logger = logging.getLogger(__name__)
+
+# Default hold music URL (Twilio's default classical hold music)
+DEFAULT_HOLD_MUSIC_URL = "http://com.twilio.sounds.music.s3.amazonaws.com/ClockworkWaltz.mp3"
+
 
 class TwilioAdapter(TelephonyAdapter):
     """Twilio implementation of the TelephonyAdapter interface.
@@ -28,6 +34,9 @@ class TwilioAdapter(TelephonyAdapter):
         TWILIO_ACCOUNT_SID: Twilio account SID
         TWILIO_AUTH_TOKEN: Twilio auth token
         TWILIO_PHONE_NUMBER: Twilio phone number for outbound calls
+        TRANSFER_NUMBER: Default target number for call transfers
+        TRANSFER_TIMEOUT: Transfer ring timeout in seconds (default: 30)
+        HOLD_MUSIC_URL: URL for hold music during transfer (optional)
 
     Example:
         ```python
@@ -41,6 +50,9 @@ class TwilioAdapter(TelephonyAdapter):
         account_sid: str | None = None,
         auth_token: str | None = None,
         phone_number: str | None = None,
+        transfer_number: str | None = None,
+        transfer_timeout: int | None = None,
+        hold_music_url: str | None = None,
     ) -> None:
         """Initialize the Twilio adapter.
 
@@ -48,10 +60,16 @@ class TwilioAdapter(TelephonyAdapter):
             account_sid: Twilio account SID. Defaults to TWILIO_ACCOUNT_SID env var.
             auth_token: Twilio auth token. Defaults to TWILIO_AUTH_TOKEN env var.
             phone_number: Twilio phone number. Defaults to TWILIO_PHONE_NUMBER env var.
+            transfer_number: Default transfer target. Defaults to TRANSFER_NUMBER env var.
+            transfer_timeout: Transfer ring timeout in seconds. Defaults to TRANSFER_TIMEOUT env var or 30.
+            hold_music_url: URL for hold music. Defaults to HOLD_MUSIC_URL env var.
         """
         self.account_sid = account_sid or os.getenv("TWILIO_ACCOUNT_SID", "")
         self.auth_token = auth_token or os.getenv("TWILIO_AUTH_TOKEN", "")
         self.phone_number = phone_number or os.getenv("TWILIO_PHONE_NUMBER", "")
+        self.transfer_number = transfer_number or os.getenv("TRANSFER_NUMBER", "")
+        self.transfer_timeout = transfer_timeout or int(os.getenv("TRANSFER_TIMEOUT", "30"))
+        self.hold_music_url = hold_music_url or os.getenv("HOLD_MUSIC_URL", DEFAULT_HOLD_MUSIC_URL)
 
         # Lazy initialization of client
         self._client: Client | None = None
@@ -101,26 +119,78 @@ class TwilioAdapter(TelephonyAdapter):
         """
         self.client.calls(call_id).update(status="completed")
 
-    async def transfer_call(self, call_id: str, target_number: str) -> bool:
+    async def transfer_call(
+        self,
+        call_id: str,
+        target_number: str | None = None,
+        timeout: int | None = None,
+        status_callback_url: str | None = None,
+        hold_music_url: str | None = None,
+    ) -> bool:
         """Transfer an active call to another phone number.
 
-        Updates the call's TwiML to dial the target number.
+        Updates the call's TwiML to dial the target number. Plays hold music
+        while connecting and supports status callbacks for transfer events.
 
         Args:
             call_id: The Twilio Call SID to transfer.
             target_number: The destination phone number (E.164 format).
+                          Defaults to TRANSFER_NUMBER environment variable.
+            timeout: Ring timeout in seconds. Defaults to TRANSFER_TIMEOUT env var or 30.
+            status_callback_url: URL to receive transfer status callbacks.
+            hold_music_url: URL for hold music while connecting.
+                           Defaults to HOLD_MUSIC_URL env var or default music.
 
         Returns:
             True if the transfer was initiated successfully.
 
         Raises:
+            ValueError: If no target number is provided and TRANSFER_NUMBER is not set.
             TwilioException: If the transfer fails.
         """
-        # Generate TwiML for transfer
-        twiml = self.generate_transfer_twiml(target_number)
+        # Use default target number if not provided
+        effective_target = target_number or self.transfer_number
+        if not effective_target:
+            logger.error(
+                "Transfer failed: no target number provided",
+                extra={"call_id": call_id},
+            )
+            raise ValueError(
+                "No transfer target number provided. "
+                "Pass target_number or set TRANSFER_NUMBER environment variable."
+            )
+
+        effective_timeout = timeout or self.transfer_timeout
+        effective_hold_music = hold_music_url or self.hold_music_url
+
+        logger.info(
+            "Initiating call transfer",
+            extra={
+                "call_id": call_id,
+                "target_number": effective_target,
+                "timeout": effective_timeout,
+            },
+        )
+
+        # Generate TwiML for transfer with hold music
+        twiml = self.generate_transfer_twiml_with_hold(
+            target_number=effective_target,
+            caller_id=self.phone_number or None,
+            timeout=effective_timeout,
+            hold_music_url=effective_hold_music,
+            status_callback_url=status_callback_url,
+        )
 
         # Update the call with new TwiML
         self.client.calls(call_id).update(twiml=str(twiml))
+
+        logger.info(
+            "Transfer initiated successfully",
+            extra={
+                "call_id": call_id,
+                "target_number": effective_target,
+            },
+        )
 
         return True
 
@@ -263,6 +333,95 @@ class TwilioAdapter(TelephonyAdapter):
             dial_kwargs["record"] = "record-from-answer-dual"
 
         response.dial(target_number, **dial_kwargs)
+
+        return response
+
+    @staticmethod
+    def generate_transfer_twiml_with_hold(
+        target_number: str,
+        caller_id: str | None = None,
+        timeout: int = 30,
+        hold_music_url: str | None = None,
+        status_callback_url: str | None = None,
+        record: bool = False,
+        announce_transfer: bool = True,
+        language: str = "en-US",
+    ) -> VoiceResponse:
+        """Generate TwiML to transfer/dial with hold music while connecting.
+
+        The TwiML will:
+        1. Optionally announce the transfer to the caller
+        2. Play hold music while the transfer is connecting
+        3. Dial the target number with optional status callbacks
+
+        Args:
+            target_number: Phone number to dial (E.164 format).
+            caller_id: Caller ID to display (must be verified Twilio number).
+            timeout: Ring timeout in seconds (default: 30).
+            hold_music_url: URL for hold music played while connecting.
+                           If None, uses Twilio's default ring tone.
+            status_callback_url: URL to receive dial status events
+                                (initiated, ringing, answered, completed).
+            record: Whether to record the call (default: False).
+            announce_transfer: Whether to announce "Please hold" (default: True).
+            language: Language for announcement (default: en-US).
+
+        Returns:
+            VoiceResponse with Dial TwiML including hold music.
+        """
+        response = VoiceResponse()
+
+        # Announce transfer to caller
+        if announce_transfer:
+            if language.startswith("es"):
+                response.say(
+                    "Por favor espere mientras lo transferimos.",
+                    language="es-MX",
+                )
+            else:
+                response.say(
+                    "Please hold while we transfer your call.",
+                    language="en-US",
+                )
+
+        # Build dial kwargs
+        dial_kwargs: dict[str, str | int | bool] = {
+            "timeout": timeout,
+        }
+
+        if caller_id:
+            dial_kwargs["caller_id"] = caller_id
+
+        if record:
+            dial_kwargs["record"] = "record-from-answer-dual"
+
+        if status_callback_url:
+            dial_kwargs["action"] = status_callback_url
+            dial_kwargs["method"] = "POST"
+
+        # Add ring tone / hold music using ringTone attribute
+        # The ringTone plays to the caller while waiting for the transfer target to answer
+        # Options: at, au, bg, br, be, ch, cl, cn, cz, de, dk, ee, es, fi, fr, gr, hu, il, in, it, lt, jp, mx, my, nl, no, nz, ph, pl, pt, ru, se, sg, th, uk, us, us-old, tw, ve, za
+        dial_kwargs["ring_tone"] = "us"
+
+        dial = response.dial(**dial_kwargs)
+
+        # Use <Number> verb to allow playing hold music to caller
+        # The hold_music_url is played to the caller while ringing
+        number_kwargs: dict[str, str] = {}
+        if hold_music_url:
+            number_kwargs["url"] = hold_music_url
+            number_kwargs["method"] = "GET"
+
+        if status_callback_url:
+            number_kwargs["status_callback"] = status_callback_url
+            number_kwargs["status_callback_event"] = "initiated ringing answered completed"
+            number_kwargs["status_callback_method"] = "POST"
+
+        if number_kwargs:
+            dial.number(target_number, **number_kwargs)
+        else:
+            dial.number(target_number)
 
         return response
 

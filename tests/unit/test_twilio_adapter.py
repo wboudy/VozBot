@@ -3,6 +3,7 @@
 Tests cover:
 - TwilioAdapter class implementing TelephonyAdapter ABC
 - TwiML generation methods (answer, play, transfer, record, hangup)
+- Transfer with hold music and status callbacks
 - Twilio status mapping
 - Error handling for missing credentials
 """
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from vozbot.telephony.adapters.base import CallInfo, CallStatus, TelephonyAdapter
-from vozbot.telephony.adapters.twilio_adapter import TwilioAdapter
+from vozbot.telephony.adapters.twilio_adapter import DEFAULT_HOLD_MUSIC_URL, TwilioAdapter
 
 
 class TestTwilioAdapterInterface:
@@ -566,3 +567,326 @@ class TestTwiMLGenerationBilingualGreeting:
         twiml = str(response)
 
         assert 'timeout="15"' in twiml
+
+
+class TestTwiMLGenerationTransferWithHold:
+    """Tests for TwiML generation - transfer with hold music."""
+
+    def test_generate_transfer_twiml_with_hold_basic(self) -> None:
+        """Test transfer TwiML with hold music - basic usage."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999"
+        )
+        twiml = str(response)
+
+        # Should have Dial verb with Number
+        assert "<Dial" in twiml
+        assert "<Number>" in twiml
+        assert "+15559999999" in twiml
+        # Default timeout
+        assert 'timeout="30"' in twiml
+        # Should have ring tone
+        assert 'ringTone="us"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_announces_transfer(self) -> None:
+        """Test that transfer announces hold message by default."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999"
+        )
+        twiml = str(response)
+
+        # Should announce transfer in English by default
+        assert "<Say" in twiml
+        assert "Please hold" in twiml or "transfer" in twiml.lower()
+
+    def test_generate_transfer_twiml_with_hold_spanish_announcement(self) -> None:
+        """Test transfer announcement in Spanish."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            language="es-MX",
+        )
+        twiml = str(response)
+
+        # Should announce in Spanish
+        assert "Por favor espere" in twiml
+        assert 'language="es-MX"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_no_announcement(self) -> None:
+        """Test transfer without announcement."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            announce_transfer=False,
+        )
+        twiml = str(response)
+
+        # Should not have Say verb before Dial
+        assert "<Say" not in twiml.split("<Dial")[0]
+
+    def test_generate_transfer_twiml_with_hold_music_url(self) -> None:
+        """Test transfer with custom hold music URL."""
+        hold_url = "https://example.com/hold_music.mp3"
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            hold_music_url=hold_url,
+        )
+        twiml = str(response)
+
+        # Should have URL in Number element
+        assert f'url="{hold_url}"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_custom_timeout(self) -> None:
+        """Test transfer with custom timeout."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            timeout=45,
+        )
+        twiml = str(response)
+
+        assert 'timeout="45"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_caller_id(self) -> None:
+        """Test transfer with custom caller ID."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            caller_id="+15551111111",
+        )
+        twiml = str(response)
+
+        assert 'callerId="+15551111111"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_status_callback(self) -> None:
+        """Test transfer with status callback URL."""
+        callback_url = "https://example.com/transfer-status"
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            status_callback_url=callback_url,
+        )
+        twiml = str(response)
+
+        # Should have action URL on Dial
+        assert f'action="{callback_url}"' in twiml
+        # Should have status callback on Number
+        assert f'statusCallback="{callback_url}"' in twiml
+        assert 'statusCallbackEvent="initiated ringing answered completed"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_recording(self) -> None:
+        """Test transfer with call recording enabled."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            record=True,
+        )
+        twiml = str(response)
+
+        assert 'record="record-from-answer-dual"' in twiml
+
+    def test_generate_transfer_twiml_with_hold_valid_xml(self) -> None:
+        """Test that generated TwiML with hold is valid XML."""
+        response = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15559999999",
+            hold_music_url="https://example.com/music.mp3",
+            status_callback_url="https://example.com/callback",
+        )
+        twiml = str(response)
+
+        assert twiml.startswith("<?xml version")
+        assert "</Response>" in twiml
+
+
+class TestTwilioAdapterTransferCall:
+    """Tests for TwilioAdapter.transfer_call method."""
+
+    @pytest.fixture
+    def mock_twilio_client(self) -> MagicMock:
+        """Create a mock Twilio client."""
+        client = MagicMock()
+        return client
+
+    @pytest.fixture
+    def adapter_with_transfer_config(self, mock_twilio_client: MagicMock) -> TwilioAdapter:
+        """Create a TwilioAdapter with transfer configuration."""
+        adapter = TwilioAdapter(
+            account_sid="AC123456",
+            auth_token="auth_token",
+            phone_number="+15551234567",
+            transfer_number="+15559876543",
+            transfer_timeout=45,
+            hold_music_url="https://example.com/hold.mp3",
+        )
+        adapter._client = mock_twilio_client
+        return adapter
+
+    async def test_transfer_call_with_explicit_target(
+        self,
+        adapter_with_transfer_config: TwilioAdapter,
+        mock_twilio_client: MagicMock,
+    ) -> None:
+        """Test transfer_call with explicitly provided target number."""
+        result = await adapter_with_transfer_config.transfer_call(
+            call_id="CA123456",
+            target_number="+15551112222",
+        )
+
+        assert result is True
+        mock_twilio_client.calls.assert_called_with("CA123456")
+
+        # Check TwiML was passed
+        update_call = mock_twilio_client.calls().update
+        update_call.assert_called_once()
+        twiml_arg = update_call.call_args[1]["twiml"]
+
+        # Verify TwiML contains explicit target
+        assert "+15551112222" in twiml_arg
+        assert "<Dial" in twiml_arg
+
+    async def test_transfer_call_uses_default_target(
+        self,
+        adapter_with_transfer_config: TwilioAdapter,
+        mock_twilio_client: MagicMock,
+    ) -> None:
+        """Test transfer_call uses TRANSFER_NUMBER when no target provided."""
+        result = await adapter_with_transfer_config.transfer_call(call_id="CA123456")
+
+        assert result is True
+
+        # Check TwiML uses default transfer number
+        update_call = mock_twilio_client.calls().update
+        twiml_arg = update_call.call_args[1]["twiml"]
+
+        assert "+15559876543" in twiml_arg  # Default from adapter config
+
+    async def test_transfer_call_uses_default_timeout(
+        self,
+        adapter_with_transfer_config: TwilioAdapter,
+        mock_twilio_client: MagicMock,
+    ) -> None:
+        """Test transfer_call uses configured timeout."""
+        await adapter_with_transfer_config.transfer_call(call_id="CA123456")
+
+        update_call = mock_twilio_client.calls().update
+        twiml_arg = update_call.call_args[1]["twiml"]
+
+        assert 'timeout="45"' in twiml_arg  # Default from adapter config
+
+    async def test_transfer_call_with_custom_timeout(
+        self,
+        adapter_with_transfer_config: TwilioAdapter,
+        mock_twilio_client: MagicMock,
+    ) -> None:
+        """Test transfer_call with custom timeout override."""
+        await adapter_with_transfer_config.transfer_call(
+            call_id="CA123456",
+            timeout=60,
+        )
+
+        update_call = mock_twilio_client.calls().update
+        twiml_arg = update_call.call_args[1]["twiml"]
+
+        assert 'timeout="60"' in twiml_arg
+
+    async def test_transfer_call_uses_hold_music(
+        self,
+        adapter_with_transfer_config: TwilioAdapter,
+        mock_twilio_client: MagicMock,
+    ) -> None:
+        """Test transfer_call uses configured hold music."""
+        await adapter_with_transfer_config.transfer_call(call_id="CA123456")
+
+        update_call = mock_twilio_client.calls().update
+        twiml_arg = update_call.call_args[1]["twiml"]
+
+        assert 'url="https://example.com/hold.mp3"' in twiml_arg
+
+    async def test_transfer_call_with_status_callback(
+        self,
+        adapter_with_transfer_config: TwilioAdapter,
+        mock_twilio_client: MagicMock,
+    ) -> None:
+        """Test transfer_call with status callback URL."""
+        callback_url = "https://example.com/transfer-status"
+        await adapter_with_transfer_config.transfer_call(
+            call_id="CA123456",
+            status_callback_url=callback_url,
+        )
+
+        update_call = mock_twilio_client.calls().update
+        twiml_arg = update_call.call_args[1]["twiml"]
+
+        assert f'action="{callback_url}"' in twiml_arg
+        assert f'statusCallback="{callback_url}"' in twiml_arg
+
+    async def test_transfer_call_raises_without_target(self) -> None:
+        """Test transfer_call raises ValueError if no target available."""
+        adapter = TwilioAdapter(
+            account_sid="AC123456",
+            auth_token="auth_token",
+            transfer_number="",  # No default transfer number
+        )
+        adapter._client = MagicMock()
+
+        with pytest.raises(ValueError) as exc_info:
+            await adapter.transfer_call(call_id="CA123456")
+
+        assert "No transfer target number provided" in str(exc_info.value)
+
+    async def test_transfer_call_from_env_var(self) -> None:
+        """Test transfer_call uses TRANSFER_NUMBER from environment."""
+        with patch.dict(os.environ, {
+            "TWILIO_ACCOUNT_SID": "AC_ENV",
+            "TWILIO_AUTH_TOKEN": "token_env",
+            "TRANSFER_NUMBER": "+15550001234",
+            "TRANSFER_TIMEOUT": "25",
+        }):
+            adapter = TwilioAdapter()
+            adapter._client = MagicMock()
+
+            await adapter.transfer_call(call_id="CA123456")
+
+            update_call = adapter._client.calls().update
+            twiml_arg = update_call.call_args[1]["twiml"]
+
+            assert "+15550001234" in twiml_arg
+            assert 'timeout="25"' in twiml_arg
+
+
+class TestTwilioAdapterInitializationWithTransfer:
+    """Tests for TwilioAdapter initialization with transfer configuration."""
+
+    def test_init_with_transfer_config(self) -> None:
+        """Test initialization with transfer configuration."""
+        adapter = TwilioAdapter(
+            account_sid="AC123456",
+            auth_token="auth_token",
+            transfer_number="+15559876543",
+            transfer_timeout=45,
+            hold_music_url="https://example.com/music.mp3",
+        )
+
+        assert adapter.transfer_number == "+15559876543"
+        assert adapter.transfer_timeout == 45
+        assert adapter.hold_music_url == "https://example.com/music.mp3"
+
+    def test_init_with_env_vars_for_transfer(self) -> None:
+        """Test initialization from environment variables for transfer."""
+        with patch.dict(os.environ, {
+            "TWILIO_ACCOUNT_SID": "AC_ENV",
+            "TWILIO_AUTH_TOKEN": "token_env",
+            "TRANSFER_NUMBER": "+15550009999",
+            "TRANSFER_TIMEOUT": "60",
+            "HOLD_MUSIC_URL": "https://env.example.com/music.mp3",
+        }):
+            adapter = TwilioAdapter()
+
+            assert adapter.transfer_number == "+15550009999"
+            assert adapter.transfer_timeout == 60
+            assert adapter.hold_music_url == "https://env.example.com/music.mp3"
+
+    def test_init_defaults_for_transfer(self) -> None:
+        """Test default values for transfer configuration."""
+        adapter = TwilioAdapter(
+            account_sid="AC123456",
+            auth_token="auth_token",
+        )
+
+        assert adapter.transfer_number == ""  # No default
+        assert adapter.transfer_timeout == 30  # Default 30s
+        assert adapter.hold_music_url == DEFAULT_HOLD_MUSIC_URL

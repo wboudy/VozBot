@@ -1066,3 +1066,197 @@ class TestBilingualGreetingTwiML:
 
         # Should have attempt=1 in action URL
         assert "attempt=1" in content
+
+
+class TestTransferStatusWebhook:
+    """Tests for the /webhooks/twilio/transfer-status endpoint."""
+
+    def test_transfer_status_webhook_exists(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that transfer status webhook endpoint exists."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+            },
+        )
+
+        # Should not return 404
+        assert response.status_code != 404
+
+    def test_transfer_status_completed(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling of completed transfer."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallSid": "CA789012",
+                "DialCallStatus": "completed",
+                "DialCallDuration": "120",
+                "Called": "+15559999999",
+            },
+        )
+
+        assert response.status_code == 200
+        # Empty TwiML response for completed calls
+        content = response.json()
+        assert "<Response" in content
+
+    def test_transfer_status_answered(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling of answered (connected) transfer."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallSid": "CA789012",
+                "DialCallStatus": "answered",
+                "Called": "+15559999999",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+        assert "<Response" in content
+
+    def test_transfer_status_busy(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling of busy transfer target."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallSid": "CA789012",
+                "DialCallStatus": "busy",
+                "Called": "+15559999999",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should have fallback message
+        assert "unable to connect" in content.lower() or "sorry" in content.lower()
+        # Should have hangup
+        assert "<Hangup" in content
+
+    def test_transfer_status_no_answer(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling of no-answer transfer."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallSid": "CA789012",
+                "DialCallStatus": "no-answer",
+                "Called": "+15559999999",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should have fallback message
+        assert "unable to connect" in content.lower() or "sorry" in content.lower()
+
+    def test_transfer_status_failed(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling of failed transfer."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallStatus": "failed",
+                "Called": "+15559999999",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should have fallback message in both languages
+        assert "sorry" in content.lower() or "unable" in content.lower()
+        assert "sentimos" in content.lower() or "pudimos" in content.lower()
+
+    def test_transfer_status_canceled(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling of canceled transfer."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallStatus": "canceled",
+                "Called": "+15559999999",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.json()
+
+        # Should have hangup
+        assert "<Hangup" in content
+
+    def test_transfer_status_without_dial_status(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test handling transfer status without DialCallStatus."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "CallStatus": "in-progress",
+            },
+        )
+
+        assert response.status_code == 200
+        # Empty TwiML response
+        content = response.json()
+        assert "<Response" in content
+
+    def test_transfer_status_db_failure_graceful(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that DB failure during transfer status update is handled gracefully."""
+        # Patch the DB session to simulate database failure
+        with patch(
+            "vozbot.storage.db.session.get_db_session"
+        ) as mock_session:
+            mock_session.side_effect = Exception("Database error")
+
+            response = client.post(
+                "/webhooks/twilio/transfer-status",
+                data={
+                    "CallSid": "CA123456",
+                    "DialCallStatus": "completed",
+                    "DialCallDuration": "60",
+                },
+            )
+
+            # Should still return 200 (DB failure is caught and logged)
+            assert response.status_code == 200
+
+    def test_transfer_status_returns_bilingual_failure_message(
+        self, client: TestClient, mock_env_dev
+    ) -> None:
+        """Test that failed transfer returns bilingual error message."""
+        response = client.post(
+            "/webhooks/twilio/transfer-status",
+            data={
+                "CallSid": "CA123456",
+                "DialCallStatus": "no-answer",
+            },
+        )
+
+        content = response.json()
+
+        # Should have both English and Spanish messages
+        assert 'language="en-US"' in content
+        assert 'language="es-MX"' in content

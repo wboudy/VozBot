@@ -230,3 +230,126 @@ class TestTwilioMagicNumbers:
 
         assert test_number in xml_str
         assert "<Dial" in xml_str
+
+
+@pytest.mark.skipif(False, reason="These tests do not require credentials")
+class TestTwilioTransferIntegration:
+    """Integration tests for call transfer functionality.
+
+    Note: These tests do NOT require Twilio credentials as they test
+    TwiML generation and webhook route configuration.
+    """
+
+    def test_transfer_twiml_with_hold_generates_valid_xml(self) -> None:
+        """Test that transfer with hold generates valid TwiML."""
+        test_number = "+15005550006"
+        callback_url = "https://example.com/transfer-status"
+
+        twiml = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number=test_number,
+            timeout=30,
+            hold_music_url="https://example.com/hold.mp3",
+            status_callback_url=callback_url,
+        )
+        xml_str = str(twiml)
+
+        # Valid XML structure
+        assert xml_str.startswith('<?xml version="1.0"')
+        assert "<Response>" in xml_str
+        assert "</Response>" in xml_str
+
+        # Has all expected TwiML elements
+        assert "<Say" in xml_str  # Announcement
+        assert "<Dial" in xml_str  # Dial verb
+        assert "<Number>" in xml_str  # Number within Dial
+
+    def test_transfer_status_webhook_route_exists(self) -> None:
+        """Test that transfer status webhook route is registered."""
+        from vozbot.telephony.webhooks.twilio_webhooks import router
+
+        route_paths = [route.path for route in router.routes]
+        assert "/transfer-status" in route_paths
+
+    def test_transfer_status_webhook_accepts_post(self) -> None:
+        """Test that transfer status webhook accepts POST method."""
+        from vozbot.telephony.webhooks.twilio_webhooks import router
+
+        for route in router.routes:
+            if hasattr(route, "path") and route.path == "/transfer-status":
+                assert "POST" in route.methods
+
+    def test_transfer_twiml_contains_status_callback_events(self) -> None:
+        """Test that transfer TwiML includes all required status callback events."""
+        callback_url = "https://example.com/callback"
+
+        twiml = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15005550006",
+            status_callback_url=callback_url,
+        )
+        xml_str = str(twiml)
+
+        # Should have all expected events
+        assert "initiated" in xml_str
+        assert "ringing" in xml_str
+        assert "answered" in xml_str
+        assert "completed" in xml_str
+
+    def test_transfer_twiml_with_default_hold_music(self) -> None:
+        """Test transfer uses default hold music URL."""
+        from vozbot.telephony.adapters.twilio_adapter import DEFAULT_HOLD_MUSIC_URL
+
+        adapter = TwilioAdapter(
+            account_sid="test_sid",
+            auth_token="test_token",
+            transfer_number="+15005550006",
+        )
+
+        # Default hold music should be set
+        assert adapter.hold_music_url == DEFAULT_HOLD_MUSIC_URL
+
+    async def test_transfer_call_flow_simulation(self) -> None:
+        """Simulate a complete transfer call flow with TwiML generation."""
+        # Step 1: Initiate transfer (would be called by agent/orchestrator)
+        transfer_target = "+15005550006"
+        callback_url = "https://example.com/webhooks/twilio/transfer-status"
+
+        twiml = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number=transfer_target,
+            timeout=30,
+            status_callback_url=callback_url,
+            announce_transfer=True,
+        )
+        xml_str = str(twiml)
+
+        # Verify TwiML structure for complete flow
+        # 1. Should announce transfer
+        assert "Please hold" in xml_str
+
+        # 2. Should have Dial with proper configuration
+        assert f'action="{callback_url}"' in xml_str
+        assert 'timeout="30"' in xml_str
+        assert 'ringTone="us"' in xml_str
+
+        # 3. Should have Number with callback
+        assert transfer_target in xml_str
+        assert f'statusCallback="{callback_url}"' in xml_str
+
+    def test_transfer_bilingual_announcement(self) -> None:
+        """Test transfer announcement works in both languages."""
+        # English announcement
+        twiml_en = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15005550006",
+            language="en-US",
+        )
+        xml_en = str(twiml_en)
+        assert "Please hold" in xml_en
+        assert 'language="en-US"' in xml_en
+
+        # Spanish announcement
+        twiml_es = TwilioAdapter.generate_transfer_twiml_with_hold(
+            target_number="+15005550006",
+            language="es-MX",
+        )
+        xml_es = str(twiml_es)
+        assert "Por favor espere" in xml_es
+        assert 'language="es-MX"' in xml_es
