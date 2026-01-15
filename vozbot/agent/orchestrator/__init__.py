@@ -1,6 +1,21 @@
 """LLM orchestrator - manages dialog flow with tool calling."""
 
+from .core import (
+    AudioCallback,
+    ConversationTurn,
+    LatencyMetrics,
+    LLMFailureError,
+    Orchestrator,
+    OrchestratorError,
+    OrchestratorState,
+    SessionConfig,
+    SessionTimeoutError,
+    STTFailureError,
+    TTSFailureError,
+)
 from .llm_base import (
+    AuthenticationError,
+    ContextLengthError,
     FinishReason,
     LLMChunk,
     LLMError,
@@ -9,8 +24,6 @@ from .llm_base import (
     Message,
     MessageRole,
     RateLimitError,
-    ContextLengthError,
-    AuthenticationError,
     TokenUsage,
     Tool,
     ToolCall,
@@ -18,6 +31,21 @@ from .llm_base import (
 from .openai_provider import OpenAIProvider
 
 __all__ = [
+    # Orchestrator
+    "AudioCallback",
+    "ConversationTurn",
+    "LatencyMetrics",
+    "LLMFailureError",
+    "Orchestrator",
+    "OrchestratorError",
+    "OrchestratorState",
+    "SessionConfig",
+    "SessionTimeoutError",
+    "STTFailureError",
+    "TTSFailureError",
+    # LLM Base
+    "AuthenticationError",
+    "ContextLengthError",
     "FinishReason",
     "LLMChunk",
     "LLMError",
@@ -26,10 +54,9 @@ __all__ = [
     "Message",
     "MessageRole",
     "RateLimitError",
-    "ContextLengthError",
-    "AuthenticationError",
     "TokenUsage",
     "Tool",
     "ToolCall",
+    # Providers
     "OpenAIProvider",
 ]
