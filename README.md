@@ -116,33 +116,38 @@ Caller
 
 ## Phased Build Plan (Milestones)
 
-### Phase 0 - Telephony Skeleton (No AI)
-- [ ] Inbound PSTN number reachable
-- [ ] Answer call, play static audio prompt
-- [ ] Record caller audio to storage
-- [ ] Save minimal call metadata to DB
+### Phase 0 - Telephony Skeleton (No AI) ✅
+- [x] Inbound PSTN number reachable (Twilio adapter)
+- [x] Answer call, play static audio prompt
+- [x] Record caller audio to storage
+- [x] Save minimal call metadata to DB
 
-### Phase 1 - STT/TTS Loop
-- [ ] Speech-to-text integration (pluggable)
-- [ ] Text-to-speech integration (pluggable)
-- [ ] Simple menu logic in English/Spanish
-- [ ] Store transcript and call duration
+### Phase 1 - STT/TTS Loop ✅
+- [x] Speech-to-text integration (Deepgram adapter)
+- [x] Text-to-speech integration (Deepgram adapter)
+- [x] Bilingual menu logic in English/Spanish
+- [x] Store transcript with language metadata
 
-### Phase 2 - LLM Orchestration + Tools
-- [ ] LLM orchestration with tool/function calling
-- [ ] State machine-driven dialog
-- [ ] Create/update call record
-- [ ] Create callback task with summary
+### Phase 2 - LLM Orchestration + Tools ✅
+- [x] LLM orchestration with tool/function calling (OpenAI adapter)
+- [x] State machine-driven dialog (12 states)
+- [x] Create/update call record
+- [x] Create callback task with summary
+- [x] Bilingual prompt templates
+- [x] Tool schemas with Pydantic validation
+- [x] Guardrails enforced (no SSN/DOB/payment)
 
-### Phase 3 - Escalation + Transfer
-- [ ] Transfer call to human (if configured)
-- [ ] Fallback to callback task if transfer fails
-- [ ] Escalation triggers enforced
+### Phase 3 - Escalation + Transfer ✅
+- [x] Transfer call to human (Twilio Dial TwiML)
+- [x] Fallback to callback task if transfer fails
+- [x] Escalation triggers enforced (keywords, sentiment, legal, emergency)
+- [x] Configurable transfer timeout (default 30s)
 
-### Phase 4 - Dashboard + Notifications (Optional)
-- [ ] Staff queue UI (minimal)
-- [ ] SMS/email notifications
-- [ ] Searchable summaries and transcripts
+### Phase 4 - Dashboard + Notifications ✅
+- [x] Staff queue UI (Streamlit dashboard)
+- [x] SMS notifications (Twilio) for urgent callbacks
+- [x] Email notifications (SendGrid/SES)
+- [x] Searchable transcripts with highlighting
 
 ---
 
@@ -271,34 +276,34 @@ Strict validation rules:
 
 ---
 
-## Repo Layout (Recommendation)
+## Repo Layout
 
 ```
-/telephony/
-  adapters/
-  webhooks/
+vozbot/
+  telephony/
+    adapters/          # TwilioAdapter (call control, transfer)
+    webhooks/          # Twilio webhook handlers
+  speech/
+    stt/               # STTProvider ABC + DeepgramSTT
+    tts/               # TTSProvider ABC + DeepgramTTS
+  agent/
+    orchestrator/      # LLMProvider ABC, OpenAI adapter, core loop
+    prompts/           # Bilingual prompt templates (EN/ES)
+    state_machine/     # CallState enum, StateMachine class
+    tools/             # Pydantic schemas + tool handlers
+    escalation.py      # EscalationDetector (keywords, sentiment)
+  storage/
+    db/                # SQLAlchemy models, session management
+    services/          # CallService, TranscriptService
+    migrations/        # Alembic migrations
+  dashboard/           # Streamlit staff dashboard + search
+  notifications/       # SMS (Twilio) + Email (SendGrid/SES)
+  queue/               # Background workers
+  main.py              # FastAPI application entry point
 
-/speech/
-  stt/
-  tts/
-
-/agent/
-  orchestrator/
-  prompts/
-  state_machine/
-
-/storage/
-  db/
-  migrations/
-
-/queue/
-  workers/
-
-/docs/
-  specs/
-  runbooks/
-
-/tests/
+tests/
+  unit/                # 800+ unit tests
+  integration/         # End-to-end tests
 ```
 
 ---
@@ -367,8 +372,10 @@ pytest
 
 ## Bilingual Coverage Checklist
 
-- [ ] Bilingual greeting in English/Spanish
-- [ ] Language detection or preference prompt
-- [ ] All state machine prompts in both languages
-- [ ] Transcripts stored with language metadata
-- [ ] Callback tasks and summaries consistent across languages
+- [x] Bilingual greeting in English/Spanish
+- [x] Language detection or preference prompt
+- [x] All state machine prompts in both languages
+- [x] Transcripts stored with language metadata
+- [x] Callback tasks and summaries consistent across languages
+- [x] Escalation keywords in both languages
+- [x] Transfer fallback messages in both languages
