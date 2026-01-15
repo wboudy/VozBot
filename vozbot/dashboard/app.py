@@ -19,6 +19,11 @@ import streamlit as st
 from sqlalchemy import create_engine, desc, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from vozbot.dashboard.search import (
+    PaginatedSearchResults,
+    SearchResult,
+    search_transcripts,
+)
 from vozbot.storage.db.models import (
     Call,
     CallbackTask,
@@ -338,6 +343,122 @@ def render_task_table(tasks: list[dict[str, Any]]) -> None:
 
 
 # -----------------------------------------------------------------------------
+# Search UI Components
+# -----------------------------------------------------------------------------
+
+
+def render_search_result_row(result: SearchResult, index: int) -> None:
+    """Render a single search result row with highlighted matches."""
+    task = result.task
+
+    # Create expander for each result
+    with st.expander(
+        f"**{task['name']}** | {task['phone']} | {task['priority']} | Score: {result.relevance_score:.1f}",
+        expanded=False,
+    ):
+        # Show match highlights first
+        if result.matches:
+            st.markdown("**Matching Terms:**")
+            for match in result.matches:
+                st.markdown(
+                    f"- **{match.field}**: {match.highlighted}",
+                    unsafe_allow_html=True,
+                )
+            st.divider()
+
+        # Main info columns
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        with col1:
+            st.markdown("**Contact Info**")
+            st.write(f"Name: {task['name']}")
+            st.write(f"Phone: {task['phone']}")
+            st.write(f"Best Time: {task['best_time']}")
+            st.write(f"Language: {task['language']}")
+
+        with col2:
+            st.markdown("**Task Details**")
+            st.write(f"Priority: {task['priority']}")
+            st.write(f"Status: {task['status']}")
+            st.write(f"Assignee: {task['assignee']}")
+            st.write(f"Created: {format_time(task['created_at'])}")
+
+        with col3:
+            st.markdown("**Actions**")
+            if task['status'] != "completed" and st.button(
+                "Mark Complete", key=f"search_complete_{task['id']}_{index}"
+            ):
+                session = get_session()
+                if session:
+                    if update_task_status(session, task['id'], TaskStatus.COMPLETED):
+                        st.success("Task marked as complete!")
+                        st.rerun()
+                    session.close()
+
+        # Intent
+        if task['call_intent'] != "-":
+            st.markdown("**Call Intent**")
+            st.info(task['call_intent'])
+
+        # Notes
+        if task['notes']:
+            st.markdown("**Notes**")
+            st.info(task['notes'])
+
+        # Summary
+        st.markdown("**Summary**")
+        st.write(task['summary'])
+
+        # Transcript
+        st.markdown("**Transcript**")
+        st.text_area(
+            "Full Conversation",
+            value=task['transcript'],
+            height=200,
+            key=f"search_transcript_{task['id']}_{index}",
+            disabled=True,
+        )
+
+
+def render_search_results(results: PaginatedSearchResults) -> None:
+    """Render paginated search results."""
+    if not results.results:
+        st.info(f"No results found for '{results.query}'")
+        return
+
+    # Results header
+    st.markdown(
+        f"**Found {results.total_count} result{'s' if results.total_count != 1 else ''}** "
+        f"for '{results.query}'"
+    )
+
+    # Render each result
+    for i, result in enumerate(results.results):
+        render_search_result_row(result, i)
+
+    # Pagination controls
+    if results.total_pages > 1:
+        st.divider()
+        col1, col2, col3 = st.columns([1, 2, 1])
+
+        with col1:
+            if results.page > 1 and st.button("Previous", key="search_prev"):
+                st.session_state["search_page"] = results.page - 1
+                st.rerun()
+
+        with col2:
+            st.markdown(
+                f"<div style='text-align: center'>Page {results.page} of {results.total_pages}</div>",
+                unsafe_allow_html=True,
+            )
+
+        with col3:
+            if results.page < results.total_pages and st.button("Next", key="search_next"):
+                st.session_state["search_page"] = results.page + 1
+                st.rerun()
+
+
+# -----------------------------------------------------------------------------
 # Main Application
 # -----------------------------------------------------------------------------
 
@@ -365,8 +486,46 @@ def main():
         return
 
     try:
-        # Sidebar for filters and settings
+        # Initialize session state for search
+        if "search_query" not in st.session_state:
+            st.session_state["search_query"] = ""
+        if "search_page" not in st.session_state:
+            st.session_state["search_page"] = 1
+        if "search_active" not in st.session_state:
+            st.session_state["search_active"] = False
+
+        # Sidebar for search, filters and settings
         with st.sidebar:
+            # Search section
+            st.header("Search")
+
+            # Search input
+            search_query = st.text_input(
+                "Search transcripts",
+                value=st.session_state.get("search_query", ""),
+                placeholder="Name, phone, or keywords...",
+                key="search_input",
+                help="Search by phone number, name, or full-text across transcripts and summaries",
+            )
+
+            # Search button
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Search", type="primary", use_container_width=True):
+                    st.session_state["search_query"] = search_query
+                    st.session_state["search_page"] = 1
+                    st.session_state["search_active"] = bool(search_query.strip())
+                    st.rerun()
+
+            with col2:
+                if st.button("Clear", use_container_width=True):
+                    st.session_state["search_query"] = ""
+                    st.session_state["search_page"] = 1
+                    st.session_state["search_active"] = False
+                    st.rerun()
+
+            st.divider()
+
             st.header("Filters")
 
             # Sort options
@@ -390,8 +549,14 @@ def main():
 
             st.divider()
 
-            # Auto-refresh toggle
-            auto_refresh = st.checkbox("Auto-refresh (30s)", value=True)
+            # Auto-refresh toggle (disable during search)
+            auto_refresh_disabled = st.session_state.get("search_active", False)
+            auto_refresh = st.checkbox(
+                "Auto-refresh (30s)",
+                value=not auto_refresh_disabled,
+                disabled=auto_refresh_disabled,
+                help="Disabled during search" if auto_refresh_disabled else None,
+            )
 
             if st.button("Refresh Now"):
                 st.rerun()
@@ -404,7 +569,7 @@ def main():
                 st.rerun()
 
         # Auto-refresh using st.fragment and sleep
-        if auto_refresh:
+        if auto_refresh and not st.session_state.get("search_active", False):
             # Use st.empty() with time-based rerun
             import time
 
@@ -418,17 +583,33 @@ def main():
                 st.session_state["last_refresh"] = time.time()
                 st.rerun()
 
-        # Load and display tasks
-        tasks = load_callback_tasks(
-            session,
-            sort_by=sort_by,
-            status_filter=status_filter,
-        )
+        # Main content area - either search results or task list
+        if st.session_state.get("search_active", False):
+            # Show search results
+            st.subheader("Search Results")
 
-        render_task_table(tasks)
+            search_results = search_transcripts(
+                session,
+                st.session_state["search_query"],
+                page=st.session_state.get("search_page", 1),
+                page_size=20,
+                status_filter=status_filter,
+            )
 
-        # Auto-refresh script
-        if auto_refresh:
+            render_search_results(search_results)
+
+        else:
+            # Show normal task list
+            tasks = load_callback_tasks(
+                session,
+                sort_by=sort_by,
+                status_filter=status_filter,
+            )
+
+            render_task_table(tasks)
+
+        # Auto-refresh script (only when not searching)
+        if auto_refresh and not st.session_state.get("search_active", False):
             st.markdown(
                 """
                 <script>
